@@ -1,1 +1,236 @@
-<>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>What your browser reveals — demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; max-width:900px; margin:24px auto; line-height:1.5; color:#111; }
+    pre { background:#f6f6f8; padding:12px; border-radius:6px; overflow:auto; }
+    fieldset { margin:16px 0; padding:12px; border-radius:8px; }
+    .muted { color:#555; font-size:0.95rem; }
+    button { padding:8px 12px; font-size:1rem; }
+  </style>
+</head>
+<body>
+  <h1>What your browser reveals — demo</h1>
+  <p class="muted">This page collects non-permissioned information from your browser and shows it here. It's intended for educational use only.</p>
+
+  <fieldset>
+    <legend><strong>Collected data (JSON)</strong></legend>
+    <pre id="out">Collecting…</pre>
+    <div style="margin-top:8px">
+      <button id="sendBtn">Send to server /collect</button>
+      <button id="copyBtn">Copy JSON</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><strong>What this demo collects</strong></legend>
+    <ul>
+      <li><strong>Network-visible:</strong> your IP as seen by the server (server-side)</li>
+      <li><strong>Request headers:</strong> User-Agent, Referer, Accept-Language, etc. (server-side logs)</li>
+      <li><strong>Browser & device info:</strong> navigator fields (userAgent, platform, languages, hardwareConcurrency, deviceMemory)</li>
+      <li><strong>Display:</strong> screen dimensions, color depth, devicePixelRatio</li>
+      <li><strong>Connection & performance:</strong> navigator.connection (where supported), performance timing & resource timing</li>
+      <li><strong>Cookies (document.cookie):</strong> readable cookies (not HttpOnly)</li>
+      <li><strong>Canvas fingerprint:</strong> simple hashed rendering fingerprint (demonstration only)</li>
+      <li><strong>Referrer & page URL:</strong> document.referrer, location.href</li>
+      <li><strong>Other:</strong> timezone, doNotTrack, online status, plugins (where available)</li>
+    </ul>
+  </fieldset>
+
+  <script>
+  // Utility: safe property read
+  function safe(fn, fallback = null) {
+    try { return fn(); } catch(e) { return fallback; }
+  }
+
+  // Small helper to compute SHA-256 hex digest from string
+  async function sha256Hex(str) {
+    const enc = new TextEncoder().encode(str);
+    const hash = await crypto.subtle.digest('SHA-256', enc);
+    const bytes = new Uint8Array(hash);
+    return Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join('');
+  }
+
+  // Canvas fingerprint: draw text + shapes and read back data URL
+  function canvasFingerprint() {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 200; c.height = 50;
+      const ctx = c.getContext('2d');
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#f60';
+      ctx.fillRect(0,0,200,50);
+      ctx.fillStyle = '#069';
+      ctx.font = '16px "Arial"';
+      ctx.fillText('C0mpl3x-F1ngerprint✓', 2, 30);
+      ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+      ctx.fillText('𝔗𝔢𝔰𝔱 — 測試', 4, 16);
+      // draw a circle
+      ctx.beginPath();
+      ctx.arc(40, 10, 8, 0, Math.PI * 2);
+      ctx.fill();
+      return c.toDataURL();
+    } catch(e) {
+      return null;
+    }
+  }
+
+  async function gather() {
+    const nav = navigator;
+    const doc = document;
+    const win = window;
+
+    const canvasData = canvasFingerprint();
+    const canvasHash = canvasData ? await sha256Hex(canvasData) : null;
+
+    // Performance: serialize useful sections without huge payloads
+    const perf = {};
+    try {
+      const p = performance;
+      perf.now = typeof p.now === 'function' ? p.now() : null;
+      if (p.timing) {
+        perf.timing = {
+          navigationStart: p.timing.navigationStart,
+          domContentLoadedEventEnd: p.timing.domContentLoadedEventEnd,
+          loadEventEnd: p.timing.loadEventEnd
+        };
+      }
+      // resource timing — pick first few entries to demonstrate
+      try {
+        const resources = p.getEntriesByType ? p.getEntriesByType('resource').slice(0,6) : [];
+        perf.resources = resources.map(r => ({name: r.name, initiatorType: r.initiatorType, duration: r.duration}));
+      } catch(e) {}
+    } catch(e) {}
+
+    // Connection API (may be undefined in many browsers)
+    const connection = safe(() => ({
+      effectiveType: nav.connection ? nav.connection.effectiveType : undefined,
+      downlink: nav.connection ? nav.connection.downlink : undefined,
+      rtt: nav.connection ? nav.connection.rtt : undefined,
+      saveData: nav.connection ? nav.connection.saveData : undefined
+    }));
+
+    // Battery (may be deprecated / behind permissions in some browsers)
+    const battery = await safe(async () => {
+      if (typeof nav.getBattery === 'function') {
+        try {
+          const bat = await nav.getBattery();
+          return {charging: bat.charging, level: bat.level, chargingTime: bat.chargingTime, dischargingTime: bat.dischargingTime};
+        } catch(e) { return null; }
+      }
+      return null;
+    }, null);
+
+    const data = {
+      // Basic visibility
+      ts: new Date().toISOString(),
+      page: {
+        href: location.href,
+        referrer: document.referrer,
+        title: document.title
+      },
+
+      // Navigator / UA
+      navigator: {
+        userAgent: nav.userAgent,
+        platform: nav.platform,
+        product: nav.product,
+        productSub: nav.productSub,
+        vendor: nav.vendor,
+        vendorSub: nav.vendorSub,
+        languages: nav.languages,
+        language: nav.language,
+        cookieEnabled: nav.cookieEnabled,
+        doNotTrack: nav.doNotTrack,
+        online: nav.onLine,
+        hardwareConcurrency: nav.hardwareConcurrency,
+        deviceMemory: nav.deviceMemory || null,
+        maxTouchPoints: nav.maxTouchPoints || 0,
+        plugins: Array.from(nav.plugins || []).map(p => p.name).slice(0,10)
+      },
+
+      screen: {
+        width: screen.width,
+        height: screen.height,
+        availWidth: screen.availWidth,
+        availHeight: screen.availHeight,
+        colorDepth: screen.colorDepth,
+        pixelDepth: screen.pixelDepth,
+        devicePixelRatio: window.devicePixelRatio
+      },
+
+      connection,
+      battery,
+      performance: perf,
+
+      // Cookies (only non-HttpOnly cookies visible to JS)
+      documentCookie: document.cookie || null,
+
+      // Canvas fingerprint (hash)
+      canvasHash: canvasHash,
+
+      // Some runtime features
+      features: {
+        localStorage: safe(() => typeof localStorage !== 'undefined'),
+        sessionStorage: safe(() => typeof sessionStorage !== 'undefined'),
+        serviceWorker: safe(() => 'serviceWorker' in navigator),
+        webgl: safe(() => !!document.createElement('canvas').getContext('webgl')),
+        webp: null
+      }
+    };
+
+    // Quick WebP detection (no permission)
+    try {
+      const img = new Image();
+      const p = new Promise(resolve => {
+        img.onload = () => resolve(img.width === 1 && img.height === 1);
+        img.onerror = () => resolve(false);
+        img.src = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4TCEAAAAvAAAAAAfQ//73v/+BiOh/AAA=";
+      });
+      data.features.webp = await p;
+    } catch(e) { data.features.webp = null; }
+
+    return data;
+  }
+
+  // Display & send
+  (async function() {
+    const outEl = document.getElementById('out');
+    const sendBtn = document.getElementById('sendBtn');
+    const copyBtn = document.getElementById('copyBtn');
+
+    const collected = await gather();
+    outEl.textContent = JSON.stringify(collected, null, 2);
+
+    sendBtn.addEventListener('click', async () => {
+      try {
+        // POST JSON to /collect on same origin
+        const res = await fetch('/collect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(collected),
+          credentials: 'same-origin' // cookies will be sent for same-origin only
+        });
+        const txt = await res.text();
+        alert('Server response: ' + txt);
+      } catch(err) {
+        alert('Failed to send: ' + err.message);
+      }
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(collected, null, 2));
+        copyBtn.textContent = 'Copied ✓';
+        setTimeout(() => copyBtn.textContent = 'Copy JSON', 1200);
+      } catch(e) {
+        alert('Copy failed: ' + e.message);
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
